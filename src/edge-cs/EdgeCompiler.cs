@@ -15,9 +15,7 @@ public class EdgeCompiler
     static readonly Regex usingRegex = new Regex(@"^[\ \t]*(using[\ \t]+[^\ \t]+[\ \t]*\;)", RegexOptions.Multiline);
     static readonly bool debuggingEnabled = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EDGE_CS_DEBUG"));
     static readonly bool debuggingSelfEnabled = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EDGE_CS_DEBUG_SELF"));
-    static readonly bool cacheEnabled = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EDGE_CS_CACHE"));
     static Dictionary<string, Dictionary<string, Assembly>> referencedAssemblies = new Dictionary<string, Dictionary<string, Assembly>>();
-    static Dictionary<string, Func<object, Task<object>>> funcCache = new Dictionary<string, Func<object, Task<object>>>();
 
     static EdgeCompiler()
     {
@@ -44,7 +42,7 @@ public class EdgeCompiler
         return result;
     }
 
-    public Func<object, Task<object>> CompileFunc(IDictionary<string, object> parameters)
+    public Tuple<Func<object, Task<object>>, Assembly> CompileFunc(IDictionary<string, object> parameters)
     {
         string source = (string)parameters["source"];
         string lineDirective = string.Empty;
@@ -64,25 +62,7 @@ public class EdgeCompiler
             source = File.ReadAllText(source);
         }
 
-        if (debuggingSelfEnabled)
-        {
-            Console.WriteLine("Func cache size: " + funcCache.Count);
-        }
-
         var originalSource = source;
-        if (funcCache.ContainsKey(originalSource))
-        {
-            if (debuggingSelfEnabled)
-            {
-                Console.WriteLine("Serving func from cache.");
-            }
-
-            return funcCache[originalSource];
-        }
-        else if (debuggingSelfEnabled)
-        {
-            Console.WriteLine("Func not found in cache. Compiling.");
-        }
 
         // add assembly references provided explicitly through parameters
         List<string> references = new List<string>();
@@ -112,8 +92,8 @@ public class EdgeCompiler
                 fileName = (string)jsFileName;
                 lineNumber = (int)parameters["jsLineNumber"];
             }
-            
-            if (!string.IsNullOrEmpty(fileName)) 
+
+            if (!string.IsNullOrEmpty(fileName))
             {
                 lineDirective = string.Format("#line {0} \"{1}\"\n", lineNumber, fileName);
             }
@@ -137,7 +117,7 @@ public class EdgeCompiler
             }
 
             string errorsLambda;
-            source = 
+            source =
                 usings + "using System;\n"
                 + "using System.Threading.Tasks;\n"
                 + "public class Startup {\n"
@@ -190,17 +170,12 @@ public class EdgeCompiler
         }
 
         // create a Func<object,Task<object>> delegate around the method invocation using reflection
-        Func<object,Task<object>> result = (input) => 
+        Func<object,Task<object>> result = (input) =>
         {
             return (Task<object>)invokeMethod.Invoke(instance, new object[] { input });
         };
 
-        if (cacheEnabled)
-        {
-            funcCache[originalSource] = result;
-        }
-
-        return result;
+        return Tuple.Create(result, assembly);
     }
 
     bool TryCompile(string source, List<string> references, out string errors, out Assembly assembly)
@@ -212,7 +187,7 @@ public class EdgeCompiler
         Dictionary<string, string> options = new Dictionary<string, string> { { "CompilerVersion", "v4.0" } };
         CSharpCodeProvider csc = new CSharpCodeProvider(options);
         CompilerParameters parameters = new CompilerParameters();
-        parameters.GenerateInMemory = true;
+        parameters.GenerateInMemory = false;
         parameters.IncludeDebugInformation = debuggingEnabled;
         parameters.ReferencedAssemblies.AddRange(references.ToArray());
         parameters.ReferencedAssemblies.Add("System.dll");
